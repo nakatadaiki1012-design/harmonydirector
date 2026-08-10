@@ -272,6 +272,15 @@
     </div>
 
     <div class="grp">
+      <div class="lbl">メモリー</div>
+      <div class="row">
+        <button class="btn" id="memRecBtn" title="演奏を記憶">● 記憶</button>
+        <button class="btn" id="memPlayBtn" title="記憶を再生">▶</button>
+        <button class="btn" id="memClearBtn" title="消去">✕</button>
+      </div>
+    </div>
+
+    <div class="grp">
       <div class="lbl">表示 / 設定</div>
       <div class="row">
         <button class="btn on" id="labelBtn" style="font-size:11px">ドレミ</button>
@@ -345,6 +354,7 @@
       <div class="row" style="flex-wrap:wrap; gap:8px">
         <button class="btn" id="velBtn">強弱 (ベロシティ)</button>
         <button class="btn on" id="wakeBtn">スリープ防止</button>
+        <button class="btn" id="boostBtn">音量ブースト</button>
       </div>
     </div>
 
@@ -376,7 +386,7 @@ const VER = 2;
 const DEFAULTS = {
   ver:VER, mode:'just', a4:442, xpose:0, timbre:'organ', vol:0.70, keyw:50, label:true,
   bpm:120, beats:4, subdiv:1, metroVol:0.6, reverb:0.10,
-  jiRoot:'chord', seventh:'std', velocity:false, wake:true
+  jiRoot:'chord', seventh:'std', velocity:false, wake:true, boost:false, mem:[]
 };
 let S = Object.assign({}, DEFAULTS);
 try{ const j=JSON.parse(localStorage.getItem('hd_settings')||'{}'); S=Object.assign(S,j); }catch(e){}
@@ -388,8 +398,14 @@ function save(){ clearTimeout(saveT); saveT=setTimeout(()=>{ try{ localStorage.s
 /* ============================================================
    Audio engine
    ============================================================ */
-let ac=null, master=null, comp=null, conv=null, wet=null, metroGain=null;
+let ac=null, master=null, comp=null, conv=null, wet=null, metroGain=null, postGain=null;
 let A4 = S.a4;
+
+// reference-pitch memory: recorded melody events + the frequencies used for tuning
+let memRec=false;
+let memSeq=(Array.isArray(S.mem)?S.mem.slice():[]);   // [{midi,freq,t}]
+let memRef=memSeq.map(e=>e.freq);                     // frequencies used as tuner targets
+const playbackFreqs=new Set();                        // freqs currently sounding from memory playback
 
 const BASE_JUST = [1/1,16/15,9/8,6/5,5/4,4/3,45/32,3/2,8/5,5/3,9/5,15/8];
 let JUST = BASE_JUST.slice();
@@ -570,11 +586,12 @@ function ensureAudio(){
   comp.threshold.value=-4; comp.knee.value=10; comp.ratio.value=4; comp.attack.value=.003; comp.release.value=.25;
   conv=ac.createConvolver(); conv.buffer=makeIR(2.4,3.2);
   wet=ac.createGain(); wet.gain.value=S.reverb;
+  postGain=ac.createGain();
   master.connect(comp);
   master.connect(conv); conv.connect(wet); wet.connect(comp);
   metroGain.connect(comp);
-  comp.connect(ac.destination);
-  setMasterVolume(S.vol); setMetroVol(S.metroVol);
+  comp.connect(postGain); postGain.connect(ac.destination);
+  setMasterVolume(S.vol); setMetroVol(S.metroVol); setBoost(S.boost);
   if(ac.state==='suspended') ac.resume();
   requestWake();
   for(const k in TIMBRES){ try{ getWave(k); }catch(e){} }
@@ -586,6 +603,8 @@ function setMasterVolume(v){ S.vol=v; if(master){ const n=ac.currentTime;
   master.gain.cancelScheduledValues(n); master.gain.setTargetAtTime(Math.pow(v,1.7)*1.3, n, 0.02); } }
 function setMetroVol(v){ S.metroVol=v; if(metroGain){ metroGain.gain.setTargetAtTime(v*v, ac.currentTime, 0.02); } }
 function setReverb(v){ S.reverb=v; if(wet){ wet.gain.setTargetAtTime(v, ac.currentTime, 0.05); } }
+// extra post-limiter gain for a louder output (may distort on the phone speaker)
+function setBoost(b){ S.boost=b; if(postGain){ postGain.gain.setTargetAtTime(b?2.0:1.0, ac.currentTime, 0.05); } }
 
 /* ---------- note on/off ---------- */
 function noteOn(layout, vel){
@@ -597,6 +616,7 @@ function noteOn(layout, vel){
     v.setFreqNow();                                       // new note: correct pitch instantly, no swoop
     for(const vo of active.values()) if(vo!==v) vo.retune(); // existing notes: glide smoothly
   }
+  if(memRec) memSeq.push({midi:v.midi, freq:computeFreq(v.midi), t:performance.now()});
   updateChord();
   paintKey(layout, hold?'hold':'down');
 }
@@ -611,6 +631,45 @@ function allNotesOff(){ for(const m of [...active.keys()]) noteOff(m); }
 function applyTranspose(){ for(const v of active.values()) v.midi=v.layout+transpose;
   for(const v of active.values()) v.retune(); updateChord(); }
 function retuneAll(){ for(const v of active.values()) v.retune(); updateChord(); }
+
+/* ---------- reference-pitch memory ---------- */
+// frequencies the app is currently producing (live keys + memory playback)
+function liveRefFreqs(){
+  const arr=[];
+  for(const v of active.values()) arr.push(computeFreq(v.midi));
+  for(const f of playbackFreqs) arr.push(f);
+  return arr;
+}
+// play one tone at an exact frequency (preserves just-intonation pitch)
+function playFreq(freq, start, dur){
+  const t=TIMBRES[currentTimbre], wave=getWave(currentTimbre);
+  const g=ac.createGain(), filt=ac.createBiquadFilter();
+  filt.type='lowpass'; filt.frequency.value=t.cut; filt.Q.value=0.6;
+  g.connect(filt).connect(master);
+  const oscs=[], mk=(det)=>{ const o=ac.createOscillator(); o.setPeriodicWave(wave);
+    o.frequency.setValueAtTime(freq,start); if(det) o.detune.value=det; o.connect(g); o.start(start); return o; };
+  oscs.push(mk(0)); if(t.detune){ oscs.push(mk(t.detune)); oscs.push(mk(-t.detune)); }
+  const peak=0.9, sus=Math.max(0.0001,t.s*peak), rel=start+dur;
+  g.gain.setValueAtTime(0,start);
+  g.gain.linearRampToValueAtTime(peak, start+t.a);
+  g.gain.linearRampToValueAtTime(sus, start+t.a+t.d);
+  g.gain.setValueAtTime(sus, rel);
+  g.gain.linearRampToValueAtTime(0.0001, rel+t.r);
+  const stop=rel+t.r+0.05;
+  for(const o of oscs) o.stop(stop);
+  playbackFreqs.add(freq);
+  setTimeout(()=>playbackFreqs.delete(freq), Math.max(0,(stop-ac.currentTime)*1000));
+}
+function playMelody(){
+  if(!memSeq.length) return;
+  ensureAudio();
+  const t0=memSeq[0].t, now=ac.currentTime+0.06;
+  for(let i=0;i<memSeq.length;i++){
+    const ev=memSeq[i], start=now+(ev.t-t0)/1000;
+    const nextT = i<memSeq.length-1 ? now+(memSeq[i+1].t-t0)/1000 : start+0.7;
+    playFreq(ev.freq, start, Math.max(0.2, nextT-start));
+  }
+}
 
 /* ============================================================
    Keyboard UI
@@ -920,6 +979,31 @@ wakeBtn.classList.toggle('on',S.wake);
 wakeBtn.addEventListener('click',()=>{ S.wake=!S.wake; save(); wakeBtn.classList.toggle('on',S.wake);
   if(S.wake) requestWake(); else releaseWake(); });
 
+const boostBtn=document.getElementById('boostBtn');
+boostBtn.classList.toggle('on',S.boost);
+boostBtn.addEventListener('click',()=>{ S.boost=!S.boost; save(); boostBtn.classList.toggle('on',S.boost); ensureAudio(); setBoost(S.boost); });
+
+/* ---------- memory buttons ---------- */
+const memRecBtn=document.getElementById('memRecBtn');
+const memPlayBtn=document.getElementById('memPlayBtn');
+function updateMemUI(){
+  memRecBtn.classList.toggle('on',memRec);
+  memRecBtn.classList.toggle('warm',memRec);
+  memPlayBtn.textContent = memSeq.length ? ('▶ '+memSeq.length) : '▶';
+}
+memRecBtn.addEventListener('click',()=>{
+  ensureAudio();
+  memRec=!memRec;
+  if(memRec){ memSeq=[]; }                              // start a fresh recording
+  else { memRef=memSeq.map(e=>e.freq); S.mem=memSeq.slice(); save(); }  // keep as reference
+  updateMemUI();
+});
+memPlayBtn.addEventListener('click',()=>{ playMelody(); });
+document.getElementById('memClearBtn').addEventListener('click',()=>{
+  memSeq=[]; memRef=[]; memRec=false; S.mem=[]; save(); updateMemUI();
+});
+updateMemUI();
+
 document.getElementById('resetBtn').addEventListener('click',()=>{
   try{ localStorage.removeItem('hd_settings'); }catch(e){}
   location.reload();
@@ -983,7 +1067,7 @@ function detectExternal(){
   const binHz=ac.sampleRate/micAn.fftSize;
   // app's own frequencies (fundamental + a few harmonics) to exclude
   const ex=[];
-  for(const v of active.values()){ const f0=computeFreq(v.midi); for(let h=1;h<=5;h++) ex.push(f0*h); }
+  for(const f0 of liveRefFreqs()){ for(let h=1;h<=5;h++) ex.push(f0*h); }
   const lo=Math.max(1,Math.floor(55/binHz)), hi=Math.min(N-2,Math.ceil(1600/binHz));
   const peaks=[];
   for(let i=lo;i<=hi;i++){
@@ -1006,13 +1090,31 @@ function detectExternal(){
 }
 function tunerTick(){
   if(!micAn) return;
+  const live=liveRefFreqs();
   let f;
-  if(active.size>0){ f=detectExternal(); }            // reference playing: exclude app tones
+  if(live.length>0){ f=detectExternal(); }             // reference sounding: exclude app tones
   else { micAn.getFloatTimeDomainData(micBuf); f=autoCorrelate(micBuf, ac.sampleRate); }
-  if(f<=0){ tunerNote.textContent='—'; tunerCents.textContent=''; setNeedle(null); return; }
-  const midi=69+12*Math.log2(f/A4), near=Math.round(midi), cents=Math.round((midi-near)*100);
+  if(f<=0){ tunerNote.textContent='—'; tunerCents.textContent=''; tunerMsg.textContent=''; setNeedle(null); return; }
+
+  // pick the target frequency to compare against:
+  //  1) a sounding reference pitch (its exact just/equal frequency),
+  //  2) else a memorised reference pitch,
+  //  3) else the equal-tempered grid.
+  let cands=null, basis='';
+  if(live.length){ cands=live; basis=(mode==='just')?'基準: 純正律の実音':'基準: 実音'; }
+  else if(memRef.length){ cands=memRef; basis='基準: メモリー'; }
+  let tFreq;
+  if(cands){
+    tFreq=cands[0]; let bc=Math.abs(1200*Math.log2(f/tFreq));
+    for(const c of cands){ const cc=Math.abs(1200*Math.log2(f/c)); if(cc<bc){ bc=cc; tFreq=c; } }
+  } else {
+    tFreq=midiToFreqEqual(Math.round(69+12*Math.log2(f/A4))); basis='基準: 平均律';
+  }
+  const near=Math.round(69+12*Math.log2(tFreq/A4));
+  const cents=Math.round(1200*Math.log2(f/tFreq));
   tunerNote.textContent=NAMES[((near%12)+12)%12]+(Math.floor(near/12)-1);
   tunerCents.textContent=(cents>0?'+':'')+cents+'¢ ('+f.toFixed(1)+'Hz)';
+  tunerMsg.textContent=basis;
   setNeedle(cents);
 }
 async function startTuner(){
