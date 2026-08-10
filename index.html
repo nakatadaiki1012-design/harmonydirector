@@ -134,6 +134,14 @@
     transform:translateX(-50%); transition:left .06s linear; left:50%; }
   #tunerBox.intune #tunerNeedle{ background:var(--accent); box-shadow:0 0 8px var(--accent); }
   #tunerMsg{ font-size:11px; color:var(--accent2); max-width:180px; line-height:1.4; }
+  /* beat (うなり) visualizer */
+  #beatWrap{ position:relative; width:70px; height:70px; margin-top:6px; display:flex; align-items:center; justify-content:center; }
+  #beatRing{ position:absolute; width:56px; height:56px; border-radius:50%; border:3px solid var(--accent2);
+    opacity:.5; transition:border-color .1s, box-shadow .1s; will-change:transform,opacity; }
+  #beatRing.lock{ border-color:var(--accent); box-shadow:0 0 18px var(--accent); opacity:1 !important; transform:scale(1) !important; }
+  #beatTxt{ position:relative; z-index:1; font-size:11px; font-weight:800; color:var(--txt); text-align:center; line-height:1.15; }
+  #beatTxt b{ display:block; font-size:16px; font-variant-numeric:tabular-nums; }
+  #beatRing.lock ~ #beatTxt, #beatWrap.lock #beatTxt b{ color:var(--accent); }
 
   /* pan scrollbar */
   #panbar{ flex:0 0 18px; position:relative; background:#0b0f14; border-top:1px solid var(--line); touch-action:none; }
@@ -298,6 +306,7 @@
       <div id="tunerCents"></div>
       <div id="tunerMeter"><div class="ctr"></div><div id="tunerNeedle"></div></div>
       <div id="tunerMsg"></div>
+      <div id="beatWrap"><div id="beatRing"></div><div id="beatTxt">—</div></div>
     </div>
     <div id="hint">タップして開始 &nbsp;·&nbsp; <b>&nbsp;鍵盤を弾いてください</b></div>
   </div>
@@ -1029,6 +1038,34 @@ const tunerNote=document.getElementById('tunerNote');
 const tunerCents=document.getElementById('tunerCents');
 const tunerNeedle=document.getElementById('tunerNeedle');
 const tunerMsg=document.getElementById('tunerMsg');
+const beatWrap=document.getElementById('beatWrap');
+const beatRing=document.getElementById('beatRing');
+const beatTxt=document.getElementById('beatTxt');
+
+// beats between two tones for the just interval they form (unison -> |Δf|)
+const BEAT_RATIOS=[[1,1],[2,1],[3,2],[4,3],[5,4],[6,5],[5,3],[8,5],[16,9],[9,8],[15,8],[9,5]];
+const IV_JP={'1:1':'ユニゾン','2:1':'オクターブ','3:2':'5度','4:3':'4度','5:4':'長3度','6:5':'短3度','5:3':'長6度','8:5':'短6度','16:9':'短7度','9:8':'長2度','15:8':'長7度','9:5':'短7度'};
+function beatInfo(f, ref){
+  const lo=Math.min(f,ref), hi=Math.max(f,ref), R=hi/lo;
+  let best=[1,1], bd=1e9;
+  for(const [p,q] of BEAT_RATIOS){ const d=Math.abs(1200*Math.log2(R/(p/q))); if(d<bd){ bd=d; best=[p,q]; } }
+  const [p,q]=best;
+  return { beat:Math.abs(lo*p - hi*q), name:IV_JP[p+':'+q]||(p+':'+q), dev:bd };
+}
+// pulsing ring driven at the current beat rate; locks solid green at ~0 beats
+let curBeat=-1, beatPhase=0, beatLastTs=0, beatRunning=false;
+function beatLoop(ts){
+  if(!beatRunning) return;
+  requestAnimationFrame(beatLoop);
+  const dt=beatLastTs?Math.min(0.05,(ts-beatLastTs)/1000):0; beatLastTs=ts;
+  if(curBeat<0){ beatRing.classList.remove('lock'); beatRing.style.opacity='.15'; beatRing.style.transform='scale(1)'; return; }
+  if(curBeat<0.4){ beatRing.classList.add('lock'); beatWrap.classList.add('lock'); return; }
+  beatRing.classList.remove('lock'); beatWrap.classList.remove('lock');
+  beatPhase += 2*Math.PI*curBeat*dt;
+  const s=0.5+0.5*Math.sin(beatPhase);
+  beatRing.style.transform='scale('+(0.72+0.5*s)+')';
+  beatRing.style.opacity=(0.25+0.7*s).toFixed(2);
+}
 
 function autoCorrelate(buf, rate){
   let SIZE=buf.length, rms=0;
@@ -1094,7 +1131,8 @@ function tunerTick(){
   let f;
   if(live.length>0){ f=detectExternal(); }             // reference sounding: exclude app tones
   else { micAn.getFloatTimeDomainData(micBuf); f=autoCorrelate(micBuf, ac.sampleRate); }
-  if(f<=0){ tunerNote.textContent='—'; tunerCents.textContent=''; tunerMsg.textContent=''; setNeedle(null); return; }
+  if(f<=0){ tunerNote.textContent='—'; tunerCents.textContent=''; tunerMsg.textContent=''; setNeedle(null);
+    curBeat=-1; beatTxt.innerHTML='<b>—</b>うなり'; return; }
 
   // pick the target frequency to compare against:
   //  1) a sounding reference pitch (its exact just/equal frequency),
@@ -1116,6 +1154,18 @@ function tunerTick(){
   tunerCents.textContent=(cents>0?'+':'')+cents+'¢ ('+f.toFixed(1)+'Hz)';
   tunerMsg.textContent=basis;
   setNeedle(cents);
+
+  // うなり(beat) visualizer — beats vs the nearest reference tone
+  if(cands){
+    const bi=beatInfo(f, tFreq);
+    curBeat = bi.beat;
+    beatTxt.innerHTML = (bi.beat<0.4)
+      ? '<b>0</b>合っています'
+      : '<b>'+bi.beat.toFixed(1)+'</b>うなり/秒　'+bi.name;
+  } else {
+    // no reference sounding/stored: just show cents-based guidance, no beat
+    curBeat=-1; beatTxt.innerHTML='<b>—</b>基準音を鳴らすと<br>うなり表示';
+  }
 }
 async function startTuner(){
   ensureAudio();
@@ -1137,11 +1187,13 @@ async function startTuner(){
   freqData=new Float32Array(micAn.frequencyBinCount);
   src.connect(micAn);              // NOT connected to output (no feedback loop)
   tunerTimer=setInterval(tunerTick, 90);
+  beatRunning=true; beatLastTs=0; curBeat=-1; requestAnimationFrame(beatLoop);
 }
 function stopTuner(){
   clearInterval(tunerTimer); tunerTimer=null;
   if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream=null; }
-  micAn=null; tunerBox.classList.remove('show','intune');
+  micAn=null; beatRunning=false; beatWrap.classList.remove('lock');
+  tunerBox.classList.remove('show','intune');
 }
 tunerBtn.addEventListener('click', ()=>{
   tunerOn=!tunerOn;
