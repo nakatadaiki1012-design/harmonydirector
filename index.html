@@ -131,7 +131,7 @@
   #tunerMeter{ position:relative; width:180px; height:10px; border-radius:6px; background:#1b222b; border:1px solid var(--line); }
   #tunerMeter .ctr{ position:absolute; left:50%; top:-3px; width:2px; height:16px; background:var(--dim); transform:translateX(-50%); }
   #tunerNeedle{ position:absolute; top:-2px; width:6px; height:14px; border-radius:3px; background:var(--accent2);
-    transform:translateX(-50%); transition:left .06s linear; left:50%; }
+    transform:translateX(-50%); transition:left .13s ease-out; left:50%; }
   #tunerBox.intune #tunerNeedle{ background:var(--accent); box-shadow:0 0 8px var(--accent); }
   #tunerMsg{ font-size:11px; color:var(--accent2); max-width:180px; line-height:1.4; }
   /* beat (うなり) visualizer */
@@ -687,7 +687,7 @@ const NAMES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 const DOREMI=['ド','ド#','レ','レ#','ミ','ファ','ファ#','ソ','ソ#','ラ','ラ#','シ'];
 const WHITE=[0,2,4,5,7,9,11];
 const BLACK_AFTER={0:1,2:3,5:6,7:8,9:10};
-const START_OCT=2, NUM_OCT=4;
+const START_OCT=2, NUM_OCT=5;   // C2..C7 (added a high octave)
 let KEYW=S.keyw, BKW=Math.round(KEYW*0.62);
 const MINW=26, MAXW=120;
 let showLabel=S.label;
@@ -1032,6 +1032,7 @@ function releaseWake(){ if(wakeSentinel){ try{ wakeSentinel.release(); }catch(e)
    and shows the note + cents vs the app's current A reference.
    ============================================================ */
 let micStream=null, micAn=null, micBuf=null, freqData=null, tunerOn=false, tunerTimer=null;
+let smoothF=0;   // exponentially-smoothed detected pitch (reduces needle jitter)
 const tunerBtn=document.getElementById('tunerBtn');
 const tunerBox=document.getElementById('tunerBox');
 const tunerNote=document.getElementById('tunerNote');
@@ -1091,8 +1092,10 @@ function autoCorrelate(buf, rate){
 }
 function setNeedle(c){
   if(c==null){ tunerNeedle.style.left='50%'; tunerBox.classList.remove('intune'); return; }
-  const cl=Math.max(-50,Math.min(50,c));
-  tunerNeedle.style.left=(50+cl)+'%';
+  // compressive scale: gentle & precise near 0, saturates toward the edge so
+  // large deviations don't slam the needle off the meter.
+  const pos=45*Math.tanh(c/35);          // ±45% of the meter
+  tunerNeedle.style.left=(50+pos)+'%';
   tunerBox.classList.toggle('intune', Math.abs(c)<=5);
 }
 // FFT-based detector that ignores the app's own sounding frequencies,
@@ -1132,7 +1135,11 @@ function tunerTick(){
   if(live.length>0){ f=detectExternal(); }             // reference sounding: exclude app tones
   else { micAn.getFloatTimeDomainData(micBuf); f=autoCorrelate(micBuf, ac.sampleRate); }
   if(f<=0){ tunerNote.textContent='—'; tunerCents.textContent=''; tunerMsg.textContent=''; setNeedle(null);
-    curBeat=-1; beatTxt.innerHTML='<b>—</b>うなり'; return; }
+    curBeat=-1; smoothF=0; beatTxt.innerHTML='<b>—</b>うなり'; return; }
+  // smooth the pitch (snap on a big jump = a new note, otherwise ease)
+  if(smoothF<=0 || Math.abs(1200*Math.log2(f/smoothF))>70) smoothF=f;
+  else smoothF=smoothF*0.55+f*0.45;
+  f=smoothF;
 
   // pick the target frequency to compare against:
   //  1) a sounding reference pitch (its exact just/equal frequency),
@@ -1187,7 +1194,7 @@ async function startTuner(){
   freqData=new Float32Array(micAn.frequencyBinCount);
   src.connect(micAn);              // NOT connected to output (no feedback loop)
   tunerTimer=setInterval(tunerTick, 90);
-  beatRunning=true; beatLastTs=0; curBeat=-1; requestAnimationFrame(beatLoop);
+  beatRunning=true; beatLastTs=0; curBeat=-1; smoothF=0; requestAnimationFrame(beatLoop);
 }
 function stopTuner(){
   clearInterval(tunerTimer); tunerTimer=null;
