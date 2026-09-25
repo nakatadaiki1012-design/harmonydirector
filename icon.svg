@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="112" fill="#0d1117"/>
+  <rect x="40" y="40" width="432" height="432" rx="92" fill="none" stroke="#1f2733" stroke-width="6"/>
+  <!-- tuning fork -->
+  <g fill="none" stroke="#4dd0a7" stroke-width="30" stroke-linecap="round">
+    <path d="M196 150 V270 a60 60 0 0 0 120 0 V150"/>
+    <path d="M256 330 V430"/>
+  </g>
+  <circle cx="256" cy="446" r="22" fill="#4dd0a7"/>
+  <!-- sound waves -->
+  <g fill="none" stroke="#f0a04b" stroke-width="18" stroke-linecap="round" opacity="0.9">
+    <path d="M356 196 a70 70 0 0 1 0 120"/>
+    <path d="M392 168 a120 120 0 0 1 0 176"/>
+  </g>
+  <g fill="none" stroke="#f0a04b" stroke-width="18" stroke-linecap="round" opacity="0.9">
+    <path d="M156 196 a70 70 0 0 0 0 120"/>
+    <path d="M120 168 a120 120 0 0 0 0 176"/>
+  </g>
+</svg>

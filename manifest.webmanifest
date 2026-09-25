@@ -1,0 +1,15 @@
+{
+  "name": "Harmony Director",
+  "short_name": "Harmony",
+  "description": "純正律キーボード・チューナー・メトロノーム（吹奏楽向け）",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

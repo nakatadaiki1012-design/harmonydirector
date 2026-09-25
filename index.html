@@ -6,6 +6,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0d1117">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.svg">
 <title>Harmony Director</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; -webkit-user-select:none; user-select:none; }
@@ -105,7 +107,7 @@
     position:relative; flex:0 0 auto; height:100%; touch-action:none;
     background:linear-gradient(#fbfdff,#e3e9f0); border-right:1px solid #b9c4d2;
     border-radius:0 0 7px 7px; display:flex; align-items:flex-end; justify-content:center;
-    padding-bottom:10px; color:#5a6675; font-size:12px; font-weight:700;
+    padding-bottom:10px; color:#2b3546; font-size:13px; font-weight:800;
   }
   .wkey:first-child{ border-left:1px solid #b9c4d2; }
   .wkey.down{ background:linear-gradient(#c7e9dc,#9fd6c1); color:#1a3a30; }
@@ -115,7 +117,7 @@
     background:linear-gradient(#2a3240,#0c0f14); border:1px solid #05070a;
     border-radius:0 0 6px 6px; box-shadow:0 3px 5px rgba(0,0,0,.5);
     display:flex; align-items:flex-end; justify-content:center; padding-bottom:8px;
-    color:#9aa7b6; font-size:10px; font-weight:700; overflow:hidden;
+    color:#cfd8e2; font-size:10px; font-weight:700; overflow:hidden;
   }
   .bkey.down{ background:linear-gradient(#3fae8c,#1f7a5f); color:#eafff6; }
   .bkey.hold{ background:linear-gradient(#d98e3a,#9c5e15); color:#fff3e0; }
@@ -172,10 +174,10 @@
   #hint.hide{ opacity:0; }
   #rotHint{ display:none; }
   @media (orientation:portrait){
-    #rotHint{ position:absolute; left:50%; top:8px; transform:translateX(-50%); z-index:55;
-      display:flex; align-items:center; gap:8px; padding:6px 14px; border-radius:20px;
-      background:rgba(20,26,34,.92); border:1px solid var(--line); color:var(--dim); font-size:12px;
-      pointer-events:none; white-space:nowrap; transition:opacity .3s; }
+    #rotHint{ position:absolute; left:50%; bottom:30px; top:auto; transform:translateX(-50%); z-index:55;
+      display:flex; align-items:center; gap:8px; padding:8px 16px; border-radius:20px;
+      background:rgba(20,26,34,.95); border:1px solid var(--line); color:var(--txt); font-size:12px;
+      box-shadow:0 4px 14px rgba(0,0,0,.5); pointer-events:none; white-space:nowrap; transition:opacity .3s; }
     #rotHint.hide{ opacity:0; }
   }
 
@@ -198,6 +200,11 @@
     background:var(--accent); border:2px solid #0d1117; }
   input[type=range]::-moz-range-thumb{ width:22px; height:22px; border-radius:50%; background:var(--accent); border:2px solid #0d1117; }
   #closeSet{ position:absolute; top:12px; right:14px; }
+  #toast{ position:absolute; left:50%; bottom:46px; transform:translateX(-50%); z-index:58;
+    max-width:82vw; padding:10px 16px; border-radius:12px; background:rgba(20,26,34,.97);
+    border:1px solid var(--accent2); color:var(--txt); font-size:12px; line-height:1.5; text-align:center;
+    box-shadow:0 6px 18px rgba(0,0,0,.5); opacity:0; pointer-events:none; transition:opacity .25s; }
+  #toast.show{ opacity:1; }
 </style>
 </head>
 <body>
@@ -239,6 +246,7 @@
   <div id="panbar"><div id="panthumb"></div></div>
 
   <div id="rotHint"><span>📱</span>横向きにすると弾きやすくなります</div>
+  <div id="toast"></div>
 
   <!-- Settings panel -->
   <div id="backdrop"></div>
@@ -261,6 +269,7 @@
       <select id="xpose" style="width:100%">
         <option value="0">C 管</option>
         <option value="-2">B♭ 管</option>
+        <option value="-3">A 管</option>
         <option value="-9">E♭ 管</option>
         <option value="-7">F 管</option>
       </select>
@@ -321,9 +330,18 @@
     </div>
 
     <div class="set">
+      <div class="sh">音名の種類</div>
+      <select id="noteStyle" style="width:100%">
+        <option value="eng">英語（C D E… ♭表記）</option>
+        <option value="de">ドイツ音名（C D E F G A H, B=B♭）</option>
+        <option value="doremi">ドレミ（ド レ ミ…）</option>
+      </select>
+    </div>
+
+    <div class="set">
       <div class="sh">表示</div>
       <div class="ctlrow">
-        <button class="btn on" id="labelBtn">ドレミ表示</button>
+        <button class="btn on" id="labelBtn">音名を表示</button>
         <button class="btn" id="fsBtn" title="全画面">⛶ 全画面</button>
       </div>
     </div>
@@ -382,7 +400,8 @@
         ・下のバーをドラッグ → 押さえたまま横移動<br>
         ・HOLD → 押した音を保持（合唱の和音チェック）<br>
         ・⇄ → 押している間だけ純正/平均を切替（聴き比べ）<br>
-        ・PCキー A S D F… で和音演奏、←→でオクターブ
+        ・PCキー A S D F… で和音演奏、←→でオクターブ<br>
+        ・⚠ メトロノームは画面を消す/別アプリに切り替えると、ずれる・止まることがあります
       </div>
     </div>
 
@@ -403,7 +422,8 @@ const VER = 2;
 const DEFAULTS = {
   ver:VER, mode:'just', a4:442, xpose:0, timbre:'organ', vol:0.70, keyw:50, label:true,
   bpm:120, beats:4, subdiv:1, metroVol:0.6, reverb:0.10,
-  jiRoot:'chord', seventh:'std', velocity:false, wake:true, boost:false, mem:[]
+  jiRoot:'chord', seventh:'std', velocity:false, wake:true, boost:false, mem:[],
+  noteStyle:'eng', hold:false, metroNoticeSeen:false
 };
 let S = Object.assign({}, DEFAULTS);
 try{ const j=JSON.parse(localStorage.getItem('hd_settings')||'{}'); S=Object.assign(S,j); }catch(e){}
@@ -508,10 +528,10 @@ function detectChord(){
   const pcs=new Set(); let bass=Infinity;
   for(const v of active.values()){ pcs.add(((v.midi%12)+12)%12); if(v.midi<bass) bass=v.midi; }
   const bpc=((bass%12)+12)%12, arr=[...pcs];
-  if(arr.length===1) return {name:NAMES[arr[0]], sub:'単音'};
+  if(arr.length===1) return {name:nm(arr[0]), sub:'単音'};
   if(arr.length===2){
     const other=arr.find(x=>x!==bpc), iv=((other-bpc)%12+12)%12;
-    return {name:NAMES[bpc]+' '+NAMES[other], sub:INTERVAL_JP[iv]};
+    return {name:nm(bpc)+' '+nm(other), sub:INTERVAL_JP[iv]};
   }
   let best=null;
   for(const root of arr){
@@ -522,9 +542,9 @@ function detectChord(){
     }
   }
   if(!best) return null;
-  let label=NAMES[best.root]+best.c.name;
-  if(best.root!==bpc) label+='/'+NAMES[bpc];
-  return {name:label, sub:NAMES[best.root]+' '+best.c.jp};
+  let label=nm(best.root)+best.c.name;
+  if(best.root!==bpc) label+='/'+nm(bpc);
+  return {name:label, sub:nm(best.root)+' '+best.c.jp};
 }
 function updateChord(){
   const badge=document.getElementById('chordBadge');
@@ -544,7 +564,7 @@ function centsMarkup(){
     const pc=((v.midi%12)+12)%12; if(seen.has(pc)) continue; seen.add(pc);
     const dist=v.midi-ref, iv=((dist%12)+12)%12, c=Math.round(JUST_CENTS[iv]);
     const cls=c>0?'up':(c<0?'dn':'z'), txt=c>0?('+'+c):(c<0?('−'+Math.abs(c)):'±0');
-    parts.push('<span class="'+cls+'">'+NAMES[pc]+' '+txt+'¢</span>');
+    parts.push('<span class="'+cls+'">'+nm(pc)+' '+txt+'¢</span>');
   }
   return parts.join('　');
 }
@@ -693,8 +713,13 @@ function playMelody(){
 /* ============================================================
    Keyboard UI
    ============================================================ */
-const NAMES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-const DOREMI=['ド','ド#','レ','レ#','ミ','ファ','ファ#','ソ','ソ#','ラ','ラ#','シ'];
+// note-name systems (flat-based for wind band). nm() returns the current one.
+const NAME_SETS={
+  eng:   ['C','D♭','D','E♭','E','F','G♭','G','A♭','A','B♭','B'],
+  de:    ['C','Des','D','Es','E','F','Ges','G','As','A','B','H'],
+  doremi:['ド','レ♭','レ','ミ♭','ミ','ファ','ソ♭','ソ','ラ♭','ラ','シ♭','シ']
+};
+function nm(pc){ return (NAME_SETS[S.noteStyle]||NAME_SETS.eng)[((pc%12)+12)%12]; }
 const WHITE=[0,2,4,5,7,9,11];
 const BLACK_AFTER={0:1,2:3,5:6,7:8,9:10};
 const START_OCT=2, NUM_OCT=5;   // C2..C7 (added a high octave)
@@ -756,7 +781,7 @@ function setPan(x, smooth){
 function refreshLabels(){
   for(const [midi,el] of keyEls){ const span=el.querySelector('span'), pc=midi%12;
     if(!showLabel){ span.textContent=''; continue; }
-    span.textContent = el.classList.contains('wkey') ? (DOREMI[pc]+(pc===0?(Math.floor(midi/12)-1):'')) : DOREMI[pc];
+    span.textContent = el.classList.contains('wkey') ? (nm(pc)+(pc===0?(Math.floor(midi/12)-1):'')) : nm(pc);
   }
 }
 function paintKey(midi,state){ const el=keyEls.get(midi); if(!el) return;
@@ -785,7 +810,7 @@ function updatePanThumb(){
 /* ============================================================
    Input: multi-touch play + two-finger pan
    ============================================================ */
-let hold=false;
+let hold=!!S.hold;
 const pts=new Map();
 const PAN_TH=34, SETTLE_MS=130;
 let lastDownT=0, gest=false, gPanStartCX=0, gPanStartPanX=0, panArmed=false;
@@ -865,7 +890,8 @@ cmpBtn.addEventListener('pointerup',cmpUp); cmpBtn.addEventListener('pointerleav
 document.getElementById('timbre').addEventListener('change',e=>{ currentTimbre=e.target.value; S.timbre=currentTimbre; save(); });
 
 const holdBtn=document.getElementById('holdBtn');
-holdBtn.addEventListener('click',()=>{ hold=!hold; holdBtn.classList.toggle('on',hold);
+holdBtn.classList.toggle('on',hold);
+holdBtn.addEventListener('click',()=>{ hold=!hold; S.hold=hold; save(); holdBtn.classList.toggle('on',hold);
   for(const m of active.keys()) paintKey(m, hold?'hold':'down'); });
 document.getElementById('allOff').addEventListener('click',allNotesOff);
 
@@ -893,6 +919,10 @@ document.getElementById('a4Dn').addEventListener('click',()=>setA4(A4-1));
 const labelBtn=document.getElementById('labelBtn');
 labelBtn.addEventListener('click',()=>{ showLabel=!showLabel; S.label=showLabel; save();
   labelBtn.classList.toggle('on',showLabel); refreshLabels(); });
+
+// note-name system (English flats / German / ドレミ) — updates keys, chords, tuner
+const noteStyleSel=document.getElementById('noteStyle'); noteStyleSel.value=S.noteStyle;
+noteStyleSel.addEventListener('change',e=>{ S.noteStyle=e.target.value; save(); refreshLabels(); updateChord(); });
 
 // volume slider
 const volRange=document.getElementById('volRange'), volVal=document.getElementById('volVal');
@@ -951,9 +981,15 @@ function paintDot(){ if(!metroRunning){ metroDot.className='metroDot'; return; }
   while(dotQueue.length && dotQueue[0].t<=ac.currentTime){ const d=dotQueue.shift();
     metroDot.className='metroDot '+(d.accent?'accent':'beat');
     setTimeout(()=>{ if(metroRunning) metroDot.className='metroDot'; },90); } }
+// small transient notice
+const toastEl=document.getElementById('toast'); let toastT=null;
+function showToast(msg,ms){ toastEl.textContent=msg; toastEl.classList.add('show');
+  clearTimeout(toastT); toastT=setTimeout(()=>toastEl.classList.remove('show'), ms||4000); }
+
 metroBtn.addEventListener('click',()=>{ ensureAudio(); metroRunning=!metroRunning;
   metroBtn.classList.toggle('on',metroRunning); metroBtn.textContent=metroRunning?'⏸':'▶';
-  if(metroRunning){ subTick=0; nextTick=ac.currentTime+0.06; schedTimer=setInterval(scheduler,INTERVAL); paintDot(); }
+  if(metroRunning){ subTick=0; nextTick=ac.currentTime+0.06; schedTimer=setInterval(scheduler,INTERVAL); paintDot();
+    if(!S.metroNoticeSeen){ showToast('⚠ 画面を消したり別のアプリに切り替えると、メトロノームがずれる・止まることがあります。', 5000); S.metroNoticeSeen=true; save(); } }
   else { clearInterval(schedTimer); dotQueue.length=0; metroDot.className='metroDot'; } });
 
 /* ============================================================
@@ -1015,18 +1051,25 @@ function updateMemUI(){
 }
 memRecBtn.addEventListener('click',()=>{
   ensureAudio();
-  memRec=!memRec;
-  if(memRec){ memSeq=[]; }                              // start a fresh recording
-  else { memRef=memSeq.map(e=>e.freq); S.mem=memSeq.slice(); save(); }  // keep as reference
+  if(!memRec){
+    // starting a new recording overwrites any existing memory — confirm first
+    if((memSeq.length || memRef.length) && !confirm('今の記憶を消して、新しく記憶し直します。よろしいですか？')) return;
+    memRec=true; memSeq=[];
+  } else {
+    memRec=false; memRef=memSeq.map(e=>e.freq); S.mem=memSeq.slice(); save();  // keep as reference
+  }
   updateMemUI();
 });
 memPlayBtn.addEventListener('click',()=>{ playMelody(); });
 document.getElementById('memClearBtn').addEventListener('click',()=>{
+  if(!(memSeq.length||memRef.length)) return;
+  if(!confirm('記憶した音を消去しますか？')) return;
   memSeq=[]; memRef=[]; memRec=false; S.mem=[]; save(); updateMemUI();
 });
 updateMemUI();
 
 document.getElementById('resetBtn').addEventListener('click',()=>{
+  if(!confirm('すべての設定を初期化して、最初の状態に戻します。よろしいですか？')) return;
   try{ localStorage.removeItem('hd_settings'); }catch(e){}
   location.reload();
 });
@@ -1170,7 +1213,7 @@ function tunerTick(){
   }
   const near=Math.round(69+12*Math.log2(tFreq/A4));
   const cents=Math.round(1200*Math.log2(f/tFreq));
-  tunerNote.textContent=NAMES[((near%12)+12)%12]+(Math.floor(near/12)-1);
+  tunerNote.textContent=nm(near)+(Math.floor(near/12)-1);
   tunerCents.textContent=(cents>0?'+':'')+cents+'¢ ('+f.toFixed(1)+'Hz)';
   tunerMsg.textContent=basis;
   setNeedle(cents);
@@ -1241,13 +1284,16 @@ const hint=document.getElementById('hint');
 function hideHint(){ hint.classList.add('hide'); }
 document.body.addEventListener('pointerdown',()=>{ ensureAudio(); hideHint(); },{once:false});
 setTimeout(()=>{ const r=document.getElementById('rotHint'); if(r) r.classList.add('hide'); },4000);
+// PWA: install to home screen + work offline
+if('serviceWorker' in navigator){ window.addEventListener('load',()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); }); }
 
 buildKeyboard();
 applySettingsToUI();
 let rzT=null;
 window.addEventListener('resize',()=>{ clearTimeout(rzT); rzT=setTimeout(()=>measureAndClampPan(false),120); });
 window.addEventListener('orientationchange',()=>{ setTimeout(()=>measureAndClampPan(false),300); });
-document.addEventListener('visibilitychange',()=>{ if(!document.hidden){ if(ac&&ac.state==='suspended') ac.resume(); requestWake(); } });
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden){ if(ac&&ac.state==='suspended') ac.resume(); requestWake();
+  if(metroRunning) showToast('メトロノームがずれていないか確認してください。', 3000); } });
 
 /* ============================================================
    Computer keyboard (QWERTY)
