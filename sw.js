@@ -1,4 +1,4 @@
-/* Harmony Director service worker — offline support (network-first) */
+/* HamoTune service worker — offline support (network-first) */
 const CACHE = 'hd-v1';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon.svg'];
 
