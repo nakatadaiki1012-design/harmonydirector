@@ -6,6 +6,6 @@
 - マイクで外の音を測るチューナー＋「うなり」ビジュアライザー
 - 基準音メモリー、メトロノーム、移調（C/B♭/A/E♭/F管）、442Hz可変 ほか
 
-公開URL: https://nakatadaiki1012-design.github.io/harmonydirector/
+公開URL: https://nakatadaiki1012-design.github.io/hamotune/
 
 ※「Harmony Director」はヤマハ株式会社の登録商標です。本アプリは同社とは無関係の個人制作物です。
