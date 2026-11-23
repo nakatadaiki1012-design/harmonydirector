@@ -340,6 +340,14 @@
     </div>
 
     <div class="set">
+      <div class="sh">和音名・チューナーの音名（移調しているとき）</div>
+      <div class="seg" id="nameViewSeg" style="width:100%">
+        <button data-v="written" style="flex:1">楽譜の音</button>
+        <button data-v="concert" style="flex:1">実音（コンサート）</button>
+      </div>
+    </div>
+
+    <div class="set">
       <div class="sh">表示</div>
       <div class="ctlrow">
         <button class="btn on" id="labelBtn">音名を表示</button>
@@ -354,6 +362,14 @@
       <div class="seg" id="jiRootSeg" style="width:100%">
         <button data-v="chord" style="flex:1">和音の根音</button>
         <button data-v="bass" style="flex:1">最低音</button>
+        <button data-v="key" style="flex:1">調を固定</button>
+      </div>
+      <div id="jiKeyRow" style="margin-top:8px;display:none">
+        <select id="jiKey" style="width:100%"></select>
+        <div class="hintline" style="margin:6px 0 0;line-height:1.6">
+          調の主音を基準に固定します（実音）。音を足しても他の音が動きません。<br>
+          ※調によっては一部の和音（Ⅱの和音など）の5度が少し狭くなります。
+        </div>
       </div>
     </div>
 
@@ -424,7 +440,7 @@ const DEFAULTS = {
   ver:VER, mode:'just', a4:442, xpose:0, timbre:'organ', vol:0.70, keyw:50, label:true,
   bpm:120, beats:4, subdiv:1, metroVol:0.6, reverb:0.10,
   jiRoot:'chord', seventh:'std', velocity:false, wake:true, boost:false, mem:[],
-  noteStyle:'eng', hold:false, metroNoticeSeen:false
+  noteStyle:'eng', nameView:'written', jiKey:10, hold:false, metroNoticeSeen:false
 };
 let S = Object.assign({}, DEFAULTS);
 try{ const j=JSON.parse(localStorage.getItem('hd_settings')||'{}'); S=Object.assign(S,j); }catch(e){}
@@ -501,6 +517,7 @@ function jiRefMidi(extra){
   let bass=Infinity;
   for(const v of active.values()) if(v.midi<bass) bass=v.midi;
   if(extra!=null && extra<bass) bass=extra;
+  if(S.jiRoot==='key') return bass - ((((bass-S.jiKey)%12)+12)%12);   // fixed tonic (concert pitch)
   if(S.jiRoot==='bass' || active.size<2) return bass;
   const rpc=chordRootPc();
   if(rpc==null) return bass;
@@ -524,15 +541,16 @@ const CHORDS=[
   {iv:[0,3,6,9],name:'dim7',jp:'ディミニッシュ7th'},{iv:[0,4,7,9],name:'6',jp:'シックス'},
   {iv:[0,3,7,9],name:'m6',jp:'マイナー6th'},{iv:[0,2,4,7,10],name:'9',jp:'ナインス'}
 ];
-function detectChord(){
+function detectChord(off){
+  off=off||0; const nn=pc=>nm(pc-off);
   if(active.size===0) return null;
   const pcs=new Set(); let bass=Infinity;
   for(const v of active.values()){ pcs.add(((v.midi%12)+12)%12); if(v.midi<bass) bass=v.midi; }
   const bpc=((bass%12)+12)%12, arr=[...pcs];
-  if(arr.length===1) return {name:nm(arr[0]), sub:'単音'};
+  if(arr.length===1) return {name:nn(arr[0]), sub:'単音'};
   if(arr.length===2){
     const other=arr.find(x=>x!==bpc), iv=((other-bpc)%12+12)%12;
-    return {name:nm(bpc)+' '+nm(other), sub:INTERVAL_JP[iv]};
+    return {name:nn(bpc)+' '+nn(other), sub:INTERVAL_JP[iv]};
   }
   let best=null;
   for(const root of arr){
@@ -543,16 +561,19 @@ function detectChord(){
     }
   }
   if(!best) return null;
-  let label=nm(best.root)+best.c.name;
-  if(best.root!==bpc) label+='/'+nm(bpc);
-  return {name:label, sub:nm(best.root)+' '+best.c.jp};
+  let label=nn(best.root)+best.c.name;
+  if(best.root!==bpc) label+='/'+nn(bpc);
+  return {name:label, sub:nn(best.root)+' '+best.c.jp};
 }
 function updateChord(){
   const badge=document.getElementById('chordBadge');
-  const info=detectChord();
+  const off=nameOff(), info=detectChord(off);
   if(!info){ badge.classList.remove('show','just'); return; }
   document.getElementById('chordName').textContent=info.name;
-  document.getElementById('chordSub').textContent=info.sub||'';
+  let sub=info.sub||'';
+  if(off!==0) sub+='　（実音 '+detectChord(0).name+'）';   // written names: also show concert pitch
+  if(mode==='just' && S.jiRoot==='key') sub+='　調: '+nm(S.jiKey)+'（実音）';
+  document.getElementById('chordSub').textContent=sub;
   badge.classList.add('show');
   badge.classList.toggle('just', mode==='just');
   document.getElementById('chordCents').innerHTML=(mode==='just')?centsMarkup():'';
@@ -565,7 +586,7 @@ function centsMarkup(){
     const pc=((v.midi%12)+12)%12; if(seen.has(pc)) continue; seen.add(pc);
     const dist=v.midi-ref, iv=((dist%12)+12)%12, c=Math.round(JUST_CENTS[iv]);
     const cls=c>0?'up':(c<0?'dn':'z'), txt=c>0?('+'+c):(c<0?('−'+Math.abs(c)):'±0');
-    parts.push('<span class="'+cls+'">'+nm(pc)+' '+txt+'¢</span>');
+    parts.push('<span class="'+cls+'">'+nm(pc-nameOff())+' '+txt+'¢</span>');
   }
   return parts.join('　');
 }
@@ -721,8 +742,10 @@ const NAME_SETS={
   doremi:['ド','レ♭','レ','ミ♭','ミ','ファ','ソ♭','ソ','ラ♭','ラ','シ♭','シ']
 };
 function nm(pc){ return (NAME_SETS[S.noteStyle]||NAME_SETS.eng)[((pc%12)+12)%12]; }
+// chords/tuner can be named as written for the selected instrument (移調後) or at concert pitch
+function nameOff(){ return S.nameView==='written'?transpose:0; }
 // note name + octave for the tuner readout
-function tunerNoteLabel(m){ return nm(m)+(Math.floor(m/12)-1); }
+function tunerNoteLabel(m){ const w=m-nameOff(); return nm(w)+(Math.floor(w/12)-1); }
 const WHITE=[0,2,4,5,7,9,11];
 const BLACK_AFTER={0:1,2:3,5:6,7:8,9:10};
 const START_OCT=2, NUM_OCT=5;   // C2..C7 (added a high octave)
@@ -925,7 +948,7 @@ labelBtn.addEventListener('click',()=>{ showLabel=!showLabel; S.label=showLabel;
 
 // note-name system (English flats / German / ドレミ) — updates keys, chords, tuner
 const noteStyleSel=document.getElementById('noteStyle'); noteStyleSel.value=S.noteStyle;
-noteStyleSel.addEventListener('change',e=>{ S.noteStyle=e.target.value; save(); refreshLabels(); updateChord(); });
+noteStyleSel.addEventListener('change',e=>{ S.noteStyle=e.target.value; save(); refreshLabels(); updateChord(); if(typeof fillJiKeys==='function') fillJiKeys(); });
 
 // volume slider
 const volRange=document.getElementById('volRange'), volVal=document.getElementById('volVal');
@@ -1017,8 +1040,16 @@ function segInit(segId, valKey, onchange){
   seg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{ S[valKey]=b.dataset.v; save(); upd(); onchange(); }));
   upd();
 }
-segInit('jiRootSeg','jiRoot',()=>retuneAll());
+const jiKeySel=document.getElementById('jiKey'), jiKeyRow=document.getElementById('jiKeyRow');
+function fillJiKeys(){ jiKeySel.innerHTML='';
+  for(let pc=0;pc<12;pc++){ const o=document.createElement('option'); o.value=pc; o.textContent=nm(pc)+' の調（実音）'; jiKeySel.appendChild(o); }
+  jiKeySel.value=String(S.jiKey); }
+function showJiKeyRow(){ jiKeyRow.style.display=(S.jiRoot==='key')?'block':'none'; }
+fillJiKeys(); showJiKeyRow();
+jiKeySel.addEventListener('change',e=>{ S.jiKey=parseInt(e.target.value,10); save(); retuneAll(); });
+segInit('jiRootSeg','jiRoot',()=>{ showJiKeyRow(); retuneAll(); });
 segInit('seventhSeg','seventh',()=>rebuildJI());
+segInit('nameViewSeg','nameView',()=>updateChord());
 
 const revRange=document.getElementById('revRange'), revVal=document.getElementById('revVal');
 revRange.value=S.reverb; revVal.textContent=Math.round(S.reverb*100/0.6)+'%';
