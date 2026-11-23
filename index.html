@@ -7,7 +7,8 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0d1117">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="apple-touch-icon" href="icon.svg">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <title>HamoTune（ハモチューン）— 純正律キーボード＆チューナー</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; -webkit-user-select:none; user-select:none; }
@@ -720,6 +721,8 @@ const NAME_SETS={
   doremi:['ド','レ♭','レ','ミ♭','ミ','ファ','ソ♭','ソ','ラ♭','ラ','シ♭','シ']
 };
 function nm(pc){ return (NAME_SETS[S.noteStyle]||NAME_SETS.eng)[((pc%12)+12)%12]; }
+// note name + octave for the tuner readout
+function tunerNoteLabel(m){ return nm(m)+(Math.floor(m/12)-1); }
 const WHITE=[0,2,4,5,7,9,11];
 const BLACK_AFTER={0:1,2:3,5:6,7:8,9:10};
 const START_OCT=2, NUM_OCT=5;   // C2..C7 (added a high octave)
@@ -1146,32 +1149,46 @@ function autoCorrelate(buf, rate){
   const f=rate/T0;
   return (f>40 && f<2000) ? f : -1;
 }
-function setNeedle(c){
+function setNeedle(c, signUnknown){
   if(c==null){ tunerNeedle.style.left='50%'; tunerBox.classList.remove('intune'); return; }
   // compressive scale: gentle & precise near 0, saturates toward the edge so
   // large deviations don't slam the needle off the meter.
-  const pos=45*Math.tanh(c/35);          // ±45% of the meter
+  const pos=signUnknown?0:45*Math.tanh(c/35);   // ±45% of the meter (centred when the direction is unknown)
   tunerNeedle.style.left=(50+pos)+'%';
   tunerBox.classList.toggle('intune', Math.abs(c)<=5);
 }
-// FFT-based detector that ignores the app's own sounding frequencies,
-// so an external instrument can be measured WHILE the reference plays.
-function detectExternal(){
+// ---- spectrum helpers (freqData is refreshed once per tick) ----
+let binHz=1;
+function readSpectrum(){
   const N=micAn.frequencyBinCount;
   if(!freqData||freqData.length!==N) freqData=new Float32Array(N);
   micAn.getFloatFrequencyData(freqData);           // dB
-  const binHz=ac.sampleRate/micAn.fftSize;
-  // app's own frequencies (fundamental + a few harmonics) to exclude
-  const ex=[];
-  for(const f0 of liveRefFreqs()){ for(let h=1;h<=5;h++) ex.push(f0*h); }
-  const lo=Math.max(1,Math.floor(55/binHz)), hi=Math.min(N-2,Math.ceil(1600/binHz));
+  binHz=ac.sampleRate/micAn.fftSize;
+}
+function dbAt(f){ const x=f/binHz, i=Math.floor(x), t=x-i;
+  if(i<1||i>=freqData.length-1) return -200; return freqData[i]*(1-t)+freqData[i+1]*t; }
+// strongest (interpolated) peak within ±pct of f
+function peakNear(f,pct){
+  const lo=Math.max(1,Math.floor(f*(1-pct)/binHz)), hi=Math.min(freqData.length-2,Math.ceil(f*(1+pct)/binHz));
+  let bi=-1, bd=-1e9; for(let i=lo;i<=hi;i++){ if(freqData[i]>bd){ bd=freqData[i]; bi=i; } }
+  if(bi<1) return null;
+  const y1=freqData[bi-1], y2=freqData[bi], y3=freqData[bi+1], den=2*y2-y1-y3, d=den?(y3-y1)/(2*den):0;
+  return {f:(bi+d)*binHz, db:bd};
+}
+// An external tone on a DIFFERENT pitch from the app's tones. Only a narrow band
+// (about ±18¢, at least ±3 bins) around each app partial is ignored, so an
+// instrument that is a little off the reference is still picked up.
+function detectExternal(refs){
+  const ex=[]; for(const f0 of refs) for(let h=1;h<=5;h++) ex.push(f0*h);
+  const N=freqData.length, lo=Math.max(1,Math.floor(55/binHz)), hi=Math.min(N-2,Math.ceil(1600/binHz));
+  let maxDb=-1e9; for(let i=lo;i<=hi;i++) if(freqData[i]>maxDb) maxDb=freqData[i];
   const peaks=[];
   for(let i=lo;i<=hi;i++){
-    if(freqData[i]>freqData[i-1] && freqData[i]>=freqData[i+1] && freqData[i]>-72){
+    const v=freqData[i];
+    if(v>freqData[i-1] && v>=freqData[i+1] && v>-72 && v>maxDb-40){
       const f=i*binHz;
-      let near=false; for(const e of ex){ if(Math.abs(f-e)/e < 0.03){ near=true; break; } }
-      if(near) continue;
-      peaks.push({i, f, db:freqData[i]});
+      let near=false; for(const e of ex){ if(Math.abs(f-e)<Math.max(e*0.0105,3*binHz)){ near=true; break; } }
+      if(!near) peaks.push({i, f, db:v});
     }
   }
   if(!peaks.length) return -1;
@@ -1184,52 +1201,161 @@ function detectExternal(){
   const f=(i+d)*binHz;
   return (f>40 && f<2000) ? f : -1;
 }
-function tunerTick(){
-  if(!micAn) return;
-  const live=liveRefFreqs();
-  let f;
-  if(live.length>0){ f=detectExternal(); }             // reference sounding: exclude app tones
-  else { micAn.getFloatTimeDomainData(micBuf); f=autoCorrelate(micBuf, ac.sampleRate); }
-  if(f<=0){ tunerNote.textContent='—'; tunerCents.textContent=''; tunerMsg.textContent=''; setNeedle(null);
-    curBeat=-1; smoothF=0; beatTxt.innerHTML='<b>—</b>うなり'; return; }
+
+// ---- unison: instrument on the SAME pitch as a sounding reference ----
+// The two tones can't be told apart by frequency, so measure the beating of the
+// level in a narrow band around the reference, and compare the band level with
+// the "reference only" level captured just after the reference started.
+const refState=new Map();          // rounded freq -> {t0, cap, base}
+let refKeyStr='', refChangedAt=0;
+const refKey=f=>Math.round(f*10);
+function trackRefs(refs){
+  const ks=refs.map(refKey).sort((a,b)=>a-b).join(',');
+  if(ks===refKeyStr) return;
+  refKeyStr=ks; refChangedAt=performance.now();
+  for(const k of [...refState.keys()]) if(!refs.some(f=>refKey(f)===k)) refState.delete(k);
+  for(const f of refs){ const k=refKey(f); if(!refState.has(k)) refState.set(k,{t0:performance.now(),cap:null,base:null}); }
+}
+function refBase(f, db){
+  const s=refState.get(refKey(f)); if(!s) return null;
+  const age=performance.now()-s.t0;
+  if(s.base==null){
+    if(age>700) s.cap=(s.cap==null)?db:Math.max(s.cap,db);     // FFT window has filled with the reference
+    if(age>=1300) s.base=(s.cap!=null)?s.cap:db;
+  } else if(db<s.base) s.base=db;                               // a quieter moment = closer to "reference only"
+  return s.base;
+}
+let envBP=null, envAn=null, envBuf=null, envTimer=null, envHist=[], envFreq=0;
+function setEnvFreq(f){
+  if(!envBP || Math.abs(f-envFreq)<0.05) return;
+  envFreq=f; envHist=[];
+  envBP.frequency.setValueAtTime(f, ac.currentTime);
+  envBP.Q.setValueAtTime(f/Math.max(8,f*0.03), ac.currentTime);
+}
+function envSample(){
+  if(!envAn || !envFreq) return;
+  envAn.getFloatTimeDomainData(envBuf);
+  let s=0; for(let i=0;i<envBuf.length;i++) s+=envBuf[i]*envBuf[i];
+  const now=performance.now(); envHist.push({t:now, v:Math.sqrt(s/envBuf.length)});
+  while(envHist.length && now-envHist[0].t>4000) envHist.shift();
+}
+// periodic level modulation (= beats) in the band, 0.4-9 per second
+function envBeat(){
+  const n=envHist.length; if(n<30) return null;
+  const dt=(envHist[n-1].t-envHist[0].t)/1000/(n-1); if(!(dt>0)) return null;
+  const v=envHist.map(e=>e.v), sorted=v.slice().sort((a,b)=>a-b);
+  const p10=sorted[Math.floor(n*0.1)], p90=sorted[Math.floor(n*0.9)];
+  if(p90<=1e-6) return null;
+  const depth=(p90-p10)/(p90+p10);
+  const m=v.reduce((a,b)=>a+b,0)/n, x=v.map(a=>a-m);
+  let r0=0; for(const a of x) r0+=a*a; if(r0<=0) return {beat:0, depth, conf:0};
+  const r=k=>{ let s=0; for(let i=0;i<n-k;i++) s+=x[i]*x[i+k]; return s/r0*(n/(n-k)); };
+  const kmin=Math.max(2,Math.floor(0.11/dt)), kmax=Math.min(Math.floor(n*0.65), Math.floor(2.5/dt));
+  let prev=r(kmin-1), cur=r(kmin), dipped=false;
+  for(let k=kmin;k<kmax;k++){
+    const nx=r(k+1);
+    if(cur<0.2) dipped=true;
+    if(dipped && cur>prev && cur>=nx && cur>0.35){
+      const den=prev-2*cur+nx, d=den?0.5*(prev-nx)/den:0;
+      return {beat:1/((k+d)*dt), depth, conf:cur};
+    }
+    prev=cur; cur=nx;
+  }
+  return {beat:0, depth, conf:0};
+}
+function unisonReading(refs){
+  // the reference whose band rose most above its own "reference only" level
+  let best=null;
+  for(const fr of refs){
+    const pk=peakNear(fr,0.03); if(!pk) continue;
+    const base=refBase(fr,pk.db), rise=(base==null)?-99:pk.db-base;
+    if(!best || rise>best.rise) best={fr,pk,base,rise};
+  }
+  if(!best) return {status:'silent'};
+  setEnvFreq(best.fr);
+  if(best.base==null) return {status:'calib'};
+  const eb=envBeat();
+  const beating = !!(eb && eb.beat>0 && eb.depth>0.1 && eb.conf>0.35);
+  if(!beating && best.rise<=3) return {status:'silent'};
+  const fr=best.fr;
+  if(beating){
+    // direction: the instrument adds energy on its own side of the reference
+    const b=eb.beat, up=dbAt(fr+b), dn=dbAt(fr-b);
+    const sign=(b>=1.2*binHz && Math.abs(up-dn)>3)?(up>dn?1:-1):0;
+    return {status:'ok', fr, f:fr+(sign||1)*b, beat:b, signUnknown:sign===0};
+  }
+  // level rose but no beating: the instrument dominates (or is exactly in tune)
+  return {status:'ok', fr, f:best.pk.f, beat:Math.abs(best.pk.f-fr), signUnknown:false};
+}
+
+// pure (just) target for an arbitrary pitch within the current chord
+function jiTargetFor(f){
+  const n=Math.round(69+12*Math.log2(f/A4));
+  if(mode!=='just' || active.size===0) return midiToFreqEqual(n);
+  const ref=jiRefMidi(), d=n-ref, o=Math.floor(d/12), iv=d-o*12;
+  return midiToFreqEqual(ref)*Math.pow(2,o)*JUST[iv];
+}
+function nearestFreq(f, list){
+  let t=list[0], bc=Math.abs(1200*Math.log2(f/t));
+  for(const c of list){ const cc=Math.abs(1200*Math.log2(f/c)); if(cc<bc){ bc=cc; t=c; } }
+  return {f:t, cents:bc};
+}
+function showNoReading(msg){
+  tunerNote.textContent='—'; tunerCents.textContent=''; tunerMsg.textContent=msg||''; setNeedle(null);
+  curBeat=-1; smoothF=0; beatTxt.innerHTML='<b>—</b>うなり';
+}
+function showReading(f, tFreq, basis, beat, ivName, signUnknown){
   // smooth the pitch (snap on a big jump = a new note, otherwise ease)
   if(smoothF<=0 || Math.abs(1200*Math.log2(f/smoothF))>70) smoothF=f;
   else smoothF=smoothF*0.55+f*0.45;
   f=smoothF;
-
-  // pick the target frequency to compare against:
-  //  1) a sounding reference pitch (its exact just/equal frequency),
-  //  2) else a memorised reference pitch,
-  //  3) else the equal-tempered grid.
-  let cands=null, basis='';
-  if(live.length){ cands=live; basis=(mode==='just')?'基準: 純正律の実音':'基準: 実音'; }
-  else if(memRef.length){ cands=memRef; basis='基準: メモリー'; }
-  let tFreq;
-  if(cands){
-    tFreq=cands[0]; let bc=Math.abs(1200*Math.log2(f/tFreq));
-    for(const c of cands){ const cc=Math.abs(1200*Math.log2(f/c)); if(cc<bc){ bc=cc; tFreq=c; } }
-  } else {
-    tFreq=midiToFreqEqual(Math.round(69+12*Math.log2(f/A4))); basis='基準: 平均律';
-  }
   const near=Math.round(69+12*Math.log2(tFreq/A4));
   const cents=Math.round(1200*Math.log2(f/tFreq));
-  tunerNote.textContent=nm(near)+(Math.floor(near/12)-1);
-  tunerCents.textContent=(cents>0?'+':'')+cents+'¢ ('+f.toFixed(1)+'Hz)';
+  tunerNote.textContent=tunerNoteLabel(near);
+  const ct=(signUnknown && cents!==0)?('±'+Math.abs(cents)):((cents>0?'+':'')+cents);
+  tunerCents.textContent=ct+'¢ ('+f.toFixed(1)+'Hz)'+(signUnknown&&cents!==0?' 高低は音で確認':'');
   tunerMsg.textContent=basis;
-  setNeedle(cents);
-
-  // うなり(beat) visualizer — beats vs the nearest reference tone
-  if(cands){
-    const bi=beatInfo(f, tFreq);
-    curBeat = bi.beat;
-    beatTxt.innerHTML = (bi.beat<0.4)
-      ? '<b>0</b>合っています'
-      : '<b>'+bi.beat.toFixed(1)+'</b>うなり/秒　'+bi.name;
+  setNeedle(cents, signUnknown);
+  if(beat==null){ curBeat=-1; beatTxt.innerHTML='<b>—</b>基準音を鳴らすと<br>うなり表示'; return; }
+  curBeat=beat;
+  beatTxt.innerHTML=(beat<0.4)?'<b>0</b>合っています':'<b>'+beat.toFixed(1)+'</b>うなり/秒　'+ivName;
+}
+function tunerTick(){
+  if(!micAn) return;
+  const live=liveRefFreqs();
+  if(live.length>0){
+    readSpectrum(); trackRefs(live);
+    if(performance.now()-refChangedAt<750) return;       // let the spectrum settle after a chord change
+    const jiBasis=(mode==='just')?'基準: 純正律の実音':'基準: 実音';
+    const fx=detectExternal(live);
+    if(fx>0){
+      const nr=nearestFreq(fx, live);
+      if(nr.cents<=60){                                   // slightly off a sounding reference
+        showReading(fx, nr.f, jiBasis, Math.abs(fx-nr.f), 'ユニゾン', false);
+      } else {                                            // another chord tone: compare with its pure position
+        const bi=beatInfo(fx, nr.f);
+        showReading(fx, jiTargetFor(fx), (mode==='just')?'基準: 和音に対する純正律':'基準: 平均律', bi.beat, bi.name, false);
+      }
+      return;
+    }
+    const u=unisonReading(live);
+    if(u.status==='calib'){ showNoReading('基準音を確認中…'); return; }
+    if(u.status!=='ok'){ showNoReading(jiBasis+' ／ 楽器を鳴らしてください'); return; }
+    showReading(u.f, u.fr, jiBasis, u.beat, 'ユニゾン', u.signUnknown);
+    return;
+  }
+  // nothing sounding from the app: plain pitch detection
+  acAn.getFloatTimeDomainData(micBuf);
+  const f=autoCorrelate(micBuf, ac.sampleRate);
+  if(f<=0){ showNoReading(''); return; }
+  if(memRef.length){
+    const nr=nearestFreq(f, memRef), bi=beatInfo(f, nr.f);
+    showReading(f, nr.f, '基準: メモリー', bi.beat, bi.name, false);
   } else {
-    // no reference sounding/stored: just show cents-based guidance, no beat
-    curBeat=-1; beatTxt.innerHTML='<b>—</b>基準音を鳴らすと<br>うなり表示';
+    showReading(f, midiToFreqEqual(Math.round(69+12*Math.log2(f/A4))), '基準: 平均律', null, '', false);
   }
 }
+let acAn=null;
 async function startTuner(){
   ensureAudio();
   tunerBox.classList.add('show'); tunerMsg.textContent='';
@@ -1244,18 +1370,24 @@ async function startTuner(){
     return;
   }
   const src=ac.createMediaStreamSource(micStream);
-  micAn=ac.createAnalyser(); micAn.fftSize=16384;   // fine frequency resolution
+  micAn=ac.createAnalyser(); micAn.fftSize=32768;   // fine frequency resolution (≈1.5Hz)
   micAn.smoothingTimeConstant=0.3;
-  micBuf=new Float32Array(2048);                    // time-domain window for autocorrelation
   freqData=new Float32Array(micAn.frequencyBinCount);
-  src.connect(micAn);              // NOT connected to output (no feedback loop)
+  acAn=ac.createAnalyser(); acAn.fftSize=2048;     // short, recent window for autocorrelation
+  micBuf=new Float32Array(acAn.fftSize);
+  envBP=ac.createBiquadFilter(); envBP.type='bandpass';
+  envAn=ac.createAnalyser(); envAn.fftSize=1024; envBuf=new Float32Array(envAn.fftSize);
+  envFreq=0; envHist=[]; refState.clear(); refKeyStr='';
+  src.connect(micAn); src.connect(acAn); src.connect(envBP); envBP.connect(envAn);   // NOT connected to output
   tunerTimer=setInterval(tunerTick, 90);
+  envTimer=setInterval(envSample, 40);
   beatRunning=true; beatLastTs=0; curBeat=-1; smoothF=0; requestAnimationFrame(beatLoop);
 }
 function stopTuner(){
-  clearInterval(tunerTimer); tunerTimer=null;
+  clearInterval(tunerTimer); tunerTimer=null; clearInterval(envTimer); envTimer=null;
   if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream=null; }
-  micAn=null; beatRunning=false; beatWrap.classList.remove('lock');
+  micAn=null; acAn=null; envAn=null; envBP=null; envFreq=0;
+  beatRunning=false; beatWrap.classList.remove('lock');
   tunerBox.classList.remove('show','intune');
 }
 tunerBtn.addEventListener('click', ()=>{
