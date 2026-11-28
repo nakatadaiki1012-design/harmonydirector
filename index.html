@@ -418,6 +418,7 @@
         ・HOLD → 押した音を保持（合唱の和音チェック）<br>
         ・⇄ → 押している間だけ純正/平均を切替（聴き比べ）<br>
         ・PCキー A S D F… で和音演奏、←→でオクターブ<br>
+        ・⚠ 3音以上を同時に押すと音が切れる機種（OPPO・Xiaomi など）は、スマホの設定で「3本指」を検索し、3本指スクリーンショット／3本指で画面分割をOFFにしてください<br>
         ・⚠ メトロノームは画面を消す/別アプリに切り替えると、ずれる・止まることがあります
       </div>
     </div>
@@ -892,7 +893,31 @@ window.addEventListener('touchmove',(e)=>{ if(pts.size===0) return; e.preventDef
   for(const t of e.changedTouches) movePoint(t.identifier,t.clientX,t.clientY); },{passive:false});
 const touchEnd=(e)=>{ for(const t of e.changedTouches) endPoint(t.identifier); };
 window.addEventListener('touchend',touchEnd,{passive:false});
-window.addEventListener('touchcancel',touchEnd,{passive:false});
+// Some phones (OPPO/ColorOS, Xiaomi, etc.) take 3-finger touches for a system
+// gesture (screenshot / split screen) and send touchcancel while the fingers are
+// still down. Don't cut the chord: keep those notes sounding until the next
+// touch (or a few seconds), and tell the user how to switch the gesture off.
+const orphans=new Set(); let orphanT=null, cancelNoticeAt=-1e9;
+function releaseOrphans(){
+  clearTimeout(orphanT); orphanT=null;
+  for(const m of orphans){ let owned=false; for(const q of pts.values()) if(q.midi===m) owned=true;
+    if(!owned && !hold) noteOff(m); }
+  orphans.clear();
+}
+const touchCancel=(e)=>{
+  let kept=0;
+  for(const t of e.changedTouches){ const q=pts.get(t.identifier); if(!q) continue;
+    if(!gest && !hold && q.midi!=null){ orphans.add(q.midi); kept++; }
+    pts.delete(t.identifier); }
+  panArmed=false; if(gest && pts.size<2) gest=false;
+  if(!kept) return;
+  clearTimeout(orphanT); orphanT=setTimeout(releaseOrphans, 6000);
+  const now=performance.now();
+  if(now-cancelNoticeAt>20000){ cancelNoticeAt=now;
+    showToast('⚠ 端末の「3本指ジェスチャー」がタッチを横取りしました。スマホの設定で「3本指」を検索し、スクリーンショット／画面分割の3本指操作をOFFにすると、3音以上を押さえ続けられます。', 9000); }
+};
+window.addEventListener('touchcancel',touchCancel,{passive:false});
+window.addEventListener('touchstart',()=>{ if(orphans.size) releaseOrphans(); },{capture:true,passive:true});
 kbWrap.addEventListener('pointerdown',(e)=>{ if(e.pointerType==='touch') return;
   e.preventDefault(); beginPoint('mouse',e.clientX,e.clientY,0); },{passive:false});
 window.addEventListener('pointermove',(e)=>{ if(e.pointerType==='touch'||!pts.has('mouse')) return;
@@ -919,7 +944,7 @@ const holdBtn=document.getElementById('holdBtn');
 holdBtn.classList.toggle('on',hold);
 holdBtn.addEventListener('click',()=>{ hold=!hold; S.hold=hold; save(); holdBtn.classList.toggle('on',hold);
   for(const m of active.keys()) paintKey(m, hold?'hold':'down'); });
-document.getElementById('allOff').addEventListener('click',allNotesOff);
+document.getElementById('allOff').addEventListener('click',()=>{ orphans.clear(); allNotesOff(); });
 
 document.getElementById('xpose').addEventListener('change',e=>{ transpose=parseInt(e.target.value,10); S.xpose=transpose; save(); applyTranspose(); });
 
